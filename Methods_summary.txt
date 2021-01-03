@@ -1,0 +1,89 @@
+Here is a summary of everything we did. I describe what we did in numbered steps and then put out detailed notes/script associated with each part underneath. 
+
+1) First we ran orthofinder on the aa transcripts provides by Jason 
+
+# orthofinder -Mmsa -Sblast -f aa/
+
+2) The resulting single copy orthologs were amino acids not nucleotides so we used jason original transcripts to match the aa from orthofinder to the nucleotides from Jasons files. 
+
+#To put the CDS sequence all on one line: cat AscoGenomes.fa | tr -d '\n' > AscoGenomes1line.fa
+#To add a carriage return before the sequence names in the genome file: cat AscoGenomes1line.fa | sed 's/>/\'$'\n>/g' > AscoGenomeslinebefore.fas
+#To add a carriage return after the sequence names in the genome file: cat AscoGenomeslinebefore.fas | gsed 's/>...._......-T1\s...._....../&\n/g' > AscoGenomeslineafter.fas
+#To add a carriage return after the sequence names in the genome file for AAP genomes (different number of characters in the > lines): cat AscoGenomeslineafter.fas | gsed 's/>..._.....-T1\s..._...../&\n/g' > AscoGenomes.fas
+#To get the names of the nucleotode sequences that we want to grab: grep ">" OrthologsAA/OG0002588.fa > OG0002588.txt
+#To get the nucleotide sequences corresponding to the AA sequences: grep -f OG0002588.txt -A 1 AscoGenomes.fas | grep -v '^--' > OG0002588.fasta
+
+for i in OrthologsAA/*.fa
+do
+grep ">" $i > $i.txt
+done
+
+for i in OrthologsAA/*.txt
+do 
+grep -f $i -A 1 AscoGenomes.fas | grep -v '^--' > $i.fasta
+done
+
+
+#to grab the AA sequences from only the positively selected genKEGesG annotation, I first made a text file (sig_3_positiveOGs.txt) with the PATH to the AA folder 
+#e.g. /Volumes/GoogleDrive/.shortcut-targets-by-id/1tGz3QliFh_l8AXrcnvK5HCgqGDvEHX3Q/Ascosphaera_Results/Orthofinder_RESULTS/-Mmsa,-Sblast option Orthofinder/Results_Jun22/Orthogroup_Sequences/OG0002013.fa
+#then I ran
+#cat sig_3_positiveOGs.txt| xargs -I % cp % sig_3_positiveOGsAA/
+# then cat these into one .fa file and run on KEGG/BLASTKoala: https://www.kegg.jp/kegg/tool/annotate_sequence.html using family Onygenaceae.
+
+# to grab every 5th line out of the KO list (only need one KO for each of the 5 orthologs and then grab only the second column:
+# awk 'NR % 5 == 0' sig_3_pos_ko.txt | awk '{print $2}' > uniq_siq3_pos_sel.txt
+
+3) Then we had nucleotide sequences for each single copy ortholog. We wanted to align the nucleotides based on the aa (codon aware alignment). We did this with ete3 mixed mode alignment, where it uses nucleotide alignments if the average protein similarity is above 90%.
+
+#This is for aligning all the single copy ortholog nucleotide files with the amino acids
+#My directory is AllOrtho and it contains just .fa and .fa.fasta.txt files for our single copy orthologs
+for SINGLEORTHO in $(ls AllOrtho/*.fa)
+do
+    NAMEBASE=$(basename -s .fa $SINGLEORTHO) # fetch namebase of allortho, without the suffixes
+    AA_FILENAME="${NAMEBASE}.fa"  # filename of amino acid file (*.fa)
+    NT_FILENAME="${NAMEBASE}.fa.txt.fasta" #filename of nucleotide file (*.fa.txt.fasta)
+    echo "Processing $NAMEBASE"
+    ete3 build -a AllOrtho/$AA_FILENAME -n AllOrtho/$NT_FILENAME -o mixed_types_all/$NAMEBASE -w standard_fasttree --clearall --nt-switch-threshold 0.9
+done
+
+4) The result was not nucleotide alignments, but also some were left as amino acids because they were not able to meet the 90% similarity parameter set up in step 3. So we just removed those and took only the ones that had nucleotide alignments. 
+
+# I first made a directory in the mixed_types_0.9 dir called "ALNUC" where I will put all the aligned nucleotide files. 
+$ mkdir ALNUC 
+#Then while in the mixed_types_0.9 directory I ran the following command that will search all the subdirectories in here to find the file type that contains our aligned nucleotide sequence. It finds and moves them all into this new directory we made in step one. 
+$ find . -name '*.used_alg.fa' -exec mv '{}' ALNucs/ \;
+
+#First change all endings to be .fa
+$ brew install rename 
+$ rename 's/.fa.final_tree.used_alg.fa/.fa/' *.fa.final_tree.used_alg.fa
+
+# To remove all the files that were not turned into Nucs we search for files with an M (AA start codon) and remove those 
+$ grep -l 'M' *.fa | xargs rm -f
+
+# To change name to just be the simple name aka "Aagg"
+for i in ALNucs/*.fa; do  sed 's/\_.*//g' $i > $i.fasta; done
+
+5) At this point I now had a directory of all the nucleotide files that I could run the ete3 models on. We ran many different models but the ones we decided were best were the branch -site model where we mark both pathogens independently, the monophyletic clade with 2 pathogens and 1 commensal as separate and the two pathogens as separate from the others.
+
+# for branch site model including the marking of the two different pathogens 
+for ALNUC in $(ls ALNUCsimplenames_fa/*.fa)
+do 
+	NAMEBASE=$(basename -s .fa $ALNUC)
+	NT_FILENAME="${NAMEBASE}.fa"
+	echo "Processing $NAMEBASE"	
+	ete3 evol -t ALNUCsimplenames_fa/SpeciesTree_simple_names.txt --alg ALNUCsimplenames_fa/$NT_FILENAME --models bsA bsA1 --mark Aagg=AAP Aagg,,AAP Aagg AAP -o site_model_results/$NAMEBASE 
+done >> sum_output_site_model.out 2>&1
+
+6) We thought it might be interesting to see what the commensals had in common from the pathogens so we ran this model as well: 
+
+#This is just the branch site model where I mark the commensals separately from the pathogens to see if there is any positive sel for mutualism
+
+for ALNUC in $(ls FinalNucs_0.9/*.fa)
+do 
+	NAMEBASE=$(basename -s .fa $ALNUC)
+	NT_FILENAME="${NAMEBASE}.fa"
+	echo "Processing $NAMEBASE"	
+	ete3 evol -t FinalNucs_0.9/SpeciesTree_simple_names.txt --alg FinalNuc_0.9/$NT_FILENAME --models bsA bsA1 --mark Aace=Apol=Aatr --cpu 16 -o branch_site_model_results_commsGOOD/$NAMEBASE 
+done >> sum_output_commsGOOD.out 2>&1
+
+7) We then just parce out the data from the summary output files. We look for positively selected sites with significant p-values. Then we investigate whether these alignments were good and what each gene is in blast, pfam, and the annotation files you gave us. We did this parcing in a not so elegant way, but let us know if you want to see how we did it. 
